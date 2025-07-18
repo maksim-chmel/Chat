@@ -1,36 +1,48 @@
 using System.Security.Cryptography;
-using System.Text;
 
-namespace Chat
+namespace Chat;
+
+internal class AesEncryption
 {
-    public class AesEncryption(byte[] key, byte[] iv)
+    private readonly byte[] key;
+    private readonly byte[] iv;
+
+    public AesEncryption(byte[] key, byte[] iv)
     {
-        private byte[] Key { get; } = key;
-        private byte[] IV { get; } = iv;
-
-        public string Encrypt(string plainText)
-        {
-            using var aes = Aes.Create();
-            aes.Key = Key;
-            aes.IV = IV;
-            var encryptor = aes.CreateEncryptor();
-
-            var plainBytes = Encoding.UTF8.GetBytes(plainText);
-            var encryptedBytes = encryptor.TransformFinalBlock(plainBytes, 0, plainBytes.Length);
-            return Convert.ToBase64String(encryptedBytes);
-        }
-
-        public string Decrypt(string encryptedText)
-        {
-            using var aes = Aes.Create();
-            aes.Key = Key;
-            aes.IV = IV;
-            var decryptor = aes.CreateDecryptor();
-
-            var encryptedBytes = Convert.FromBase64String(encryptedText);
-            var decryptedBytes = decryptor.TransformFinalBlock(encryptedBytes, 0, encryptedBytes.Length);
-            return Encoding.UTF8.GetString(decryptedBytes);
-        }
+        this.key = key;
+        this.iv = iv;
     }
-    
+
+    public string Encrypt(string plainText)
+    {
+        using var aesAlg = Aes.Create();
+        aesAlg.Key = key;
+        aesAlg.IV = iv;
+
+        var encryptor = aesAlg.CreateEncryptor(aesAlg.Key, aesAlg.IV);
+        using var msEncrypt = new System.IO.MemoryStream();
+        using (var csEncrypt = new System.Security.Cryptography.CryptoStream(msEncrypt, encryptor, System.Security.Cryptography.CryptoStreamMode.Write))
+        using (var swEncrypt = new System.IO.StreamWriter(csEncrypt))
+        {
+            swEncrypt.Write(plainText);
+        }
+
+        return Convert.ToBase64String(msEncrypt.ToArray());
+    }
+
+    public string Decrypt(string cipherText)
+    {
+        var cipherBytes = Convert.FromBase64String(cipherText);
+
+        using var aesAlg = Aes.Create();
+        aesAlg.Key = key;
+        aesAlg.IV = iv;
+
+        var decryptor = aesAlg.CreateDecryptor(aesAlg.Key, aesAlg.IV);
+        using var msDecrypt = new System.IO.MemoryStream(cipherBytes);
+        using var csDecrypt = new System.Security.Cryptography.CryptoStream(msDecrypt, decryptor, System.Security.Cryptography.CryptoStreamMode.Read);
+        using var srDecrypt = new System.IO.StreamReader(csDecrypt);
+
+        return srDecrypt.ReadToEnd();
+    }
 }

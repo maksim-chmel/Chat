@@ -1,29 +1,35 @@
 using System.Security.Cryptography;
-using System.Text;
+
 namespace Chat;
 
-public class RsaEncryption
+internal class RsaEncryption
 {
-    private RSA Rsa { get; } = RSA.Create(2048);
+    private RSA rsa;
+
+    public RsaEncryption()
+    {
+        rsa = RSA.Create(2048);
+    }
 
     public string GetPublicKey()
     {
-        return Convert.ToBase64String(Rsa.ExportRSAPublicKey());
+        return Convert.ToBase64String(rsa.ExportSubjectPublicKeyInfo());
     }
 
-    public void LoadPublicKey(string base64Key)
+    public void LoadPublicKey(string base64PublicKey)
     {
-        var publicKey = Convert.FromBase64String(base64Key);
-        Rsa.ImportRSAPublicKey(publicKey, out _);
+        var keyBytes = Convert.FromBase64String(base64PublicKey);
+        rsa = RSA.Create();
+        rsa.ImportSubjectPublicKeyInfo(keyBytes, out _);
     }
 
     public byte[] Encrypt(byte[] data)
     {
-        return Rsa.Encrypt(data, RSAEncryptionPadding.OaepSHA256);
+        return rsa.Encrypt(data, RSAEncryptionPadding.Pkcs1);
     }
 
     public byte[] Decrypt(byte[] data)
     {
-        return Rsa.Decrypt(data, RSAEncryptionPadding.OaepSHA256);
+        return rsa.Decrypt(data, RSAEncryptionPadding.Pkcs1);
     }
 }

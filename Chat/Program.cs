@@ -5,190 +5,143 @@ using System.Text;
 
 namespace Chat
 {
-    internal abstract class Program
+    internal static class Program
     {
         private const int Port = 9000;
 
-        private static async Task Main(string[] args)
+        public static async Task Main()
         {
-            Console.Title = "Консольный чат";
-            PrintWelcomeMessage();
+            Console.Title = "🔐 Анонимный P2P Чат";
+            PrintWelcome();
 
-            var localIp = GetLocalIpAddress();
-            WriteColoredLine($"Ваш локальный IP: {localIp}", ConsoleColor.Green);
-            Console.WriteLine("Если вы запускаете на этом же компьютере, используйте 127.0.0.1");
+            string localIp = GetLocalIp();
+            WriteColor($"Ваш локальный IP: {localIp}", ConsoleColor.Green);
+            Console.WriteLine("Если вы запускаете на этом же компьютере, используйте 127.0.0.1\n");
 
             while (true)
             {
-                Console.ForegroundColor = ConsoleColor.Cyan;
-                Console.Write("Выберите действие: (h)остить, (c)оннектиться, (q)уит: ");
-                Console.ResetColor();
+                WriteColor("Выберите действие: (h)остить, (c)оннектиться, (q)уит: ", ConsoleColor.Cyan);
+                string? choice = Console.ReadLine()?.Trim().ToLower();
 
-                var choice = Console.ReadLine()?.Trim().ToLower();
-
-                if (choice == "h")
-                    await StartHost();
-                else if (choice == "c")
-                    await ConnectToHost();
-                else if (choice == "q")
+                switch (choice)
                 {
-                    WriteColoredLine("Выход из программы. До свидания!", ConsoleColor.Yellow);
-                    break;
-                }
-                else
-                {
-                    WriteColoredLine("Неверный выбор. Пожалуйста, введите 'h', 'c' или 'q'.", ConsoleColor.Red);
+                    case "h":
+                        await StartHost();
+                        break;
+                    case "c":
+                        await ConnectToHost();
+                        break;
+                    case "q":
+                        WriteColor("Выход из программы. До встречи!", ConsoleColor.Yellow);
+                        return;
+                    default:
+                        WriteColor("❌ Неверный выбор. Введите 'h', 'c' или 'q'.", ConsoleColor.Red);
+                        break;
                 }
 
                 Console.WriteLine();
             }
         }
 
-
-        private static void PrintWelcomeMessage()
+        private static void PrintWelcome()
         {
             Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine("Добро пожаловать в консольный чат!");
-            Console.WriteLine("Чтобы выйти из программы, введите 'q' в главном меню.");
+            Console.WriteLine("Добро пожаловать в 🔐 Анонимный P2P Чат!");
+            Console.WriteLine("Введите 'q' в главном меню, чтобы выйти.");
             Console.ResetColor();
             Console.WriteLine();
         }
 
-        private static IPAddress GetLocalIpAddress()
+        private static string GetLocalIp()
         {
-            var host = Dns.GetHostEntry(Dns.GetHostName());
-            foreach (var ip in host.AddressList)
+            foreach (var ip in Dns.GetHostEntry(Dns.GetHostName()).AddressList)
             {
                 if (ip.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(ip))
-                {
-                    return ip;
-                }
+                    return ip.ToString();
             }
-            return IPAddress.Loopback;
+            return "127.0.0.1";
         }
 
         private static async Task StartHost()
-    {
-        var rsa = new RsaEncryption();
-        var listener = new TcpListener(IPAddress.Any, Port);
-        listener.Start();
-
-        int timeoutSeconds = 30;
-        var cts = new CancellationTokenSource();
-
-        WriteColoredLine($"Режим хоста. Ожидаем подключения клиента (таймаут {timeoutSeconds} сек)...", ConsoleColor.Yellow);
-
-        var countdownTask = ShowCountdownBar(timeoutSeconds, cts.Token);
-
-        try
         {
-            var acceptTask = listener.AcceptTcpClientAsync();
-            var timeoutTask = Task.Delay(TimeSpan.FromSeconds(timeoutSeconds));
+            var rsa = new RsaEncryption();
+            var listener = new TcpListener(IPAddress.Any, Port);
+            listener.Start();
 
-            var completedTask = await Task.WhenAny(acceptTask, timeoutTask);
+            const int timeoutSeconds = 30;
+            var cts = new CancellationTokenSource();
 
-            if (completedTask == timeoutTask)
+            WriteColor($"Хост запущен. Ожидаем подключение (таймаут {timeoutSeconds} сек)...", ConsoleColor.Yellow);
+            var countdownTask = ShowCountdown(timeoutSeconds, cts.Token);
+
+            try
             {
+                var acceptTask = listener.AcceptTcpClientAsync();
+                var timeoutTask = Task.Delay(TimeSpan.FromSeconds(timeoutSeconds));
+
+                var completed = await Task.WhenAny(acceptTask, timeoutTask);
                 cts.Cancel();
+
+                if (completed == timeoutTask)
+                {
+                    Console.WriteLine();
+                    WriteColor("❌ Время ожидания истекло.", ConsoleColor.Red);
+                    return;
+                }
+
+                using var client = await acceptTask;
                 Console.WriteLine();
-                WriteColoredLine("❌ Время ожидания истекло. Клиент не подключился.", ConsoleColor.Red);
-                return;
+                WriteColor("✅ Клиент подключился!", ConsoleColor.Green);
+                await using var stream = client.GetStream();
+
+                // Передача RSA-ключа
+                string publicKey = rsa.GetPublicKey();
+                byte[] publicKeyBytes = Encoding.UTF8.GetBytes(publicKey + "\n");
+                await stream.WriteAsync(publicKeyBytes);
+
+                byte[] buffer = new byte[512];
+                int len = await stream.ReadAsync(buffer);
+                byte[] encryptedKeyIv = buffer[..len];
+                byte[] decrypted = rsa.Decrypt(encryptedKeyIv);
+                byte[] key = decrypted[..32];
+                byte[] iv = decrypted[32..];
+
+                var aes = new AesEncryption(key, iv);
+
+                WriteColor("💬 Чат начался! Введите /help для команд.", ConsoleColor.Cyan);
+                await ChatLoop(stream, aes);
             }
-
-            cts.Cancel();
-
-            using var client = await acceptTask;
-            Console.WriteLine();
-            WriteColoredLine("✅ Клиент успешно подключился!", ConsoleColor.Green);
-
-            await using var stream = client.GetStream();
-
-            var publicKey = rsa.GetPublicKey();
-            var publicKeyBytes = Encoding.UTF8.GetBytes(publicKey + "\n");
-            await stream.WriteAsync(publicKeyBytes);
-
-            byte[] buffer = new byte[512];
-            int len = await stream.ReadAsync(buffer);
-            var encryptedKeyIv = buffer.Take(len).ToArray();
-
-            var decryptedKeyIv = rsa.Decrypt(encryptedKeyIv);
-            var key = decryptedKeyIv.Take(32).ToArray();
-            var iv = decryptedKeyIv.Skip(32).Take(16).ToArray();
-
-            var aes = new AesEncryption(key, iv);
-
-            WriteColoredLine("Чат запущен! Введите /help для списка команд.", ConsoleColor.Cyan);
-            await ChatLoop(stream, aes);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine();
-            WriteColoredLine($"Ошибка: {ex.Message}", ConsoleColor.Red);
-        }
-        finally
-        {
-            listener.Stop();
-            cts.Dispose();
-        }
-    }
-
-
-        private static async Task ShowCountdownBar(int totalSeconds, CancellationToken token)
-        {
-            const int barLength = 30;
-
-            for (int i = 0; i <= totalSeconds; i++)
+            catch (Exception ex)
             {
-                if (token.IsCancellationRequested)
-                    break;
-
-                int filled = barLength - (int)((totalSeconds - i) * barLength / (float)totalSeconds);
-                string bar = new string('█', filled) + new string('░', barLength - filled);
-                Console.ForegroundColor = ConsoleColor.DarkYellow;
-                Console.Write($"\r[{bar}] {totalSeconds - i} сек осталось  ");
-                Console.ResetColor();
-
-                try
-                {
-                    await Task.Delay(1000, token);
-                }
-                catch (TaskCanceledException)
-                {
-                    break;
-                }
+                Console.WriteLine();
+                WriteColor($"Ошибка: {ex.Message}", ConsoleColor.Red);
             }
-            Console.WriteLine();
+            finally
+            {
+                listener.Stop();
+            }
         }
-
 
         private static async Task ConnectToHost()
         {
-            IPAddress ip;
-            while (true)
+            WriteColor("Введите IP хоста (например, 127.0.0.1): ", ConsoleColor.Cyan);
+            if (!IPAddress.TryParse(Console.ReadLine(), out IPAddress? ip))
             {
-                Console.ForegroundColor = ConsoleColor.Cyan;
-                Console.Write("Введите IP адрес хоста (например, 127.0.0.1): ");
-                Console.ResetColor();
-
-                var ipInput = Console.ReadLine()?.Trim();
-
-                if (IPAddress.TryParse(ipInput, out ip))
-                    break;
-
-                WriteColoredLine("Ошибка: Введён некорректный IP адрес. Попробуйте снова.", ConsoleColor.Red);
+                WriteColor("❌ Некорректный IP адрес.", ConsoleColor.Red);
+                return;
             }
 
             try
             {
                 using var client = new TcpClient();
-                WriteColoredLine($"Подключаемся к {ip}:{Port}...", ConsoleColor.Yellow);
+                WriteColor($"🔌 Подключение к {ip}:{Port}...", ConsoleColor.Yellow);
                 await client.ConnectAsync(ip, Port);
-                Console.WriteLine();
-                WriteColoredLine("✅ Подключено!", ConsoleColor.Green);
 
+                Console.WriteLine();
+                WriteColor("✅ Успешно подключено!", ConsoleColor.Green);
                 await using var stream = client.GetStream();
 
-                // Получаем публичный RSA ключ от хоста
+                // Получение RSA-ключа
                 byte[] buffer = new byte[1024];
                 int len = await stream.ReadAsync(buffer);
                 string publicKey = Encoding.UTF8.GetString(buffer, 0, len).Trim();
@@ -196,185 +149,164 @@ namespace Chat
                 var rsa = new RsaEncryption();
                 rsa.LoadPublicKey(publicKey);
 
-                // Генерируем AES ключ и IV
                 using var aesAlg = Aes.Create();
-                var key = aesAlg.Key;
-                var iv = aesAlg.IV;
+                byte[] combined = aesAlg.Key.Concat(aesAlg.IV).ToArray();
+                byte[] encrypted = rsa.Encrypt(combined);
 
-                // Шифруем AES ключ и IV с помощью RSA публичного ключа хоста
-                var combined = key.Concat(iv).ToArray();
-                var encryptedKeyIv = rsa.Encrypt(combined);
-                await stream.WriteAsync(encryptedKeyIv);
+                await stream.WriteAsync(encrypted);
 
-                var aes = new AesEncryption(key, iv);
+                var aes = new AesEncryption(aesAlg.Key, aesAlg.IV);
 
-                WriteColoredLine("Чат запущен! Введите /help для списка команд.", ConsoleColor.Cyan);
+                WriteColor("💬 Чат начался! Введите /help для команд.", ConsoleColor.Cyan);
                 await ChatLoop(stream, aes);
             }
             catch (Exception e)
             {
                 Console.WriteLine();
-                WriteColoredLine($"Ошибка подключения: {e.Message}", ConsoleColor.Red);
+                WriteColor($"Ошибка подключения: {e.Message}", ConsoleColor.Red);
             }
         }
 
-        private static async Task ChatLoop(NetworkStream stream, AesEncryption aes)
+       private static async Task ChatLoop(NetworkStream stream, AesEncryption aes)
+{
+    bool isRunning = true;
+    var cts = new CancellationTokenSource();
+    var receiverCompleted = new TaskCompletionSource();
+
+    var receiver = Task.Run(async () =>
+    {
+        byte[] buffer = new byte[2048];
+        try
         {
-            bool isRunning = true;
-
-            var receiveTask = Task.Run(async () =>
+            while (!cts.IsCancellationRequested)
             {
-                byte[] buffer = new byte[2048];
-                while (isRunning)
+                int len = await stream.ReadAsync(buffer, 0, buffer.Length, cts.Token);
+
+                if (len == 0)
                 {
-                    try
-                    {
-                        int len = await stream.ReadAsync(buffer);
-                        if (len == 0)
-                        {
-                            Console.WriteLine();
-                            WriteColoredLine("[Собеседник отключился]", ConsoleColor.Yellow);
-                            isRunning = false;
-                            break;
-                        }
-
-                        string encrypted = Encoding.UTF8.GetString(buffer, 0, len);
-                        string decrypted = aes.Decrypt(encrypted);
-
-                        if (decrypted == "__exit__")
-                        {
-                            Console.WriteLine();
-                            WriteColoredLine("[Собеседник завершил чат] /q - выход в меню", ConsoleColor.Yellow);
-                            isRunning = false;
-                            break;
-                        }
-
-                        Console.WriteLine();
-                        WriteColored("[Друг]: ", ConsoleColor.Green);
-                        Console.WriteLine(decrypted);
-
-                        if (isRunning)
-                            PrintInputPrompt();
-                    }
-                    catch
-                    {
-                        if (isRunning)
-                        {
-                            Console.WriteLine();
-                            WriteColoredLine("[Ошибка или собеседник отключился] /q - выход в меню", ConsoleColor.Red);
-                        }
-                        isRunning = false;
-                        break;
-                    }
-                }
-            });
-
-            while (isRunning)
-            {
-                PrintInputPrompt();
-                string msg = Console.ReadLine()?.Trim();
-
-                if (string.IsNullOrEmpty(msg))
-                    continue;
-
-                if (msg.Equals("/q", StringComparison.OrdinalIgnoreCase))
-                {
-                    try
-                    {
-                        string encryptedExit = aes.Encrypt("__exit__");
-                        byte[] exitData = Encoding.UTF8.GetBytes(encryptedExit);
-                        await stream.WriteAsync(exitData);
-                        stream.Close(); // Закрываем поток, чтобы собеседник вышел
-                    }
-                    catch (Exception ex)
-                    {
-                        WriteColoredLine($"Ошибка при отправке команды выхода: {ex.Message}", ConsoleColor.Red);
-                    }
-                    isRunning = false;
+                    Console.WriteLine();
+                    WriteColor("[Собеседник отключился]", ConsoleColor.Yellow);
                     break;
                 }
-                else if (msg.Equals("/help", StringComparison.OrdinalIgnoreCase))
+
+                string encrypted = Encoding.UTF8.GetString(buffer, 0, len);
+                string decrypted = aes.Decrypt(encrypted);
+
+                if (decrypted == "__exit__")
                 {
-                    Console.WriteLine("Доступные команды чата:");
-                    Console.WriteLine("  /q     - Выйти из чата");
-                    Console.WriteLine("  /help  - Показать эту справку");
-                    Console.WriteLine("  /clear - Очистить экран");
+                    Console.WriteLine();
+                    WriteColor("[Собеседник завершил чат]", ConsoleColor.Yellow);
+                    break;
                 }
-                else if (msg.Equals("/clear", StringComparison.OrdinalIgnoreCase))
-                {
-                    Console.Clear();
-                }
-                else
-                {
-                    try
-                    {
-                        string encrypted = aes.Encrypt(msg);
-                        byte[] data = Encoding.UTF8.GetBytes(encrypted);
-                        await stream.WriteAsync(data);
-                    }
-                    catch (Exception ex)
-                    {
-                        WriteColoredLine($"Ошибка при отправке сообщения: {ex.Message}", ConsoleColor.Red);
-                        isRunning = false;
-                        break;
-                    }
-                }
+
+                Console.WriteLine();
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.Write("[Друг]: ");
+                Console.ResetColor();
+                Console.WriteLine(decrypted);
+
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.Write("[Вы]: ");
+                Console.ResetColor();
             }
-
-            await receiveTask;
-
+        }
+        catch (OperationCanceledException)
+        {
+            // Нормальное завершение при /q
+        }
+        catch (Exception ex)
+        {
             Console.WriteLine();
-            WriteColoredLine("Вы вышли из чата. Возврат в меню...\n", ConsoleColor.Cyan);
+            WriteColor($"[Ошибка при приеме сообщений: {ex.Message}]", ConsoleColor.Red);
+        }
+        finally
+        {
+            receiverCompleted.SetResult();
+        }
+    });
+
+    while (isRunning)
+    {
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.Write("[Вы]: ");
+        Console.ResetColor();
+
+        string? msg = Console.ReadLine();
+
+        if (string.IsNullOrWhiteSpace(msg)) continue;
+
+        if (msg.Equals("/q", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                string exitMsg = aes.Encrypt("__exit__");
+                await stream.WriteAsync(Encoding.UTF8.GetBytes(exitMsg));
+            }
+            catch { }
+
+            // Останавливаем приём
+            isRunning = false;
+            cts.Cancel();
+            break;
         }
 
-        private static void PrintInputPrompt()
+        if (msg.Equals("/help", StringComparison.OrdinalIgnoreCase))
         {
-            var oldColor = Console.ForegroundColor;
-            Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.Write("[Вы]: ");
-            Console.ForegroundColor = oldColor;
+            Console.WriteLine(" /q     - Выйти");
+            Console.WriteLine(" /help  - Помощь");
+            Console.WriteLine(" /clear - Очистить экран");
+            continue;
         }
 
-        private static void WriteColored(string text, ConsoleColor color)
+        if (msg.Equals("/clear", StringComparison.OrdinalIgnoreCase))
         {
-            var oldColor = Console.ForegroundColor;
-            Console.ForegroundColor = color;
-            Console.Write(text);
-            Console.ForegroundColor = oldColor;
+            Console.Clear();
+            continue;
         }
 
-        private static void WriteColoredLine(string text, ConsoleColor color)
+        try
         {
-            var oldColor = Console.ForegroundColor;
+            string encrypted = aes.Encrypt(msg);
+            await stream.WriteAsync(Encoding.UTF8.GetBytes(encrypted));
+        }
+        catch (Exception ex)
+        {
+            WriteColor($"❌ Ошибка отправки: {ex.Message}", ConsoleColor.Red);
+            isRunning = false;
+            cts.Cancel();
+            break;
+        }
+    }
+
+    // Ждём завершения приёмника
+    await receiverCompleted.Task;
+    WriteColor("🔚 Вы вышли из чата\n", ConsoleColor.Cyan);
+}
+        private static async Task ShowCountdown(int seconds, CancellationToken token)
+        {
+            const int barLength = 30;
+
+            for (int i = 0; i <= seconds; i++)
+            {
+                if (token.IsCancellationRequested) break;
+
+                int fill = (int)((i / (float)seconds) * barLength);
+                string bar = new string('█', fill) + new string('░', barLength - fill);
+                Console.ForegroundColor = ConsoleColor.DarkYellow;
+                Console.Write($"\r[{bar}] {seconds - i} сек осталось  ");
+                Console.ResetColor();
+
+                try { await Task.Delay(1000, token); }
+                catch (TaskCanceledException) { break; }
+            }
+            Console.WriteLine();
+        }
+
+        private static void WriteColor(string text, ConsoleColor color)
+        {
             Console.ForegroundColor = color;
             Console.WriteLine(text);
-            Console.ForegroundColor = oldColor;
-        }
-
-        private static async Task<byte[]> ReadMessage(NetworkStream stream)
-        {
-            byte[] lengthBytes = new byte[4];
-            int read = 0;
-            while (read < 4)
-            {
-                int r = await stream.ReadAsync(lengthBytes, read, 4 - read);
-                if (r == 0) return null;
-                read += r;
-            }
-
-            int length = BitConverter.ToInt32(lengthBytes, 0);
-            if (length <= 0 || length > 10_000) return null;
-
-            byte[] data = new byte[length];
-            read = 0;
-            while (read < length)
-            {
-                int r = await stream.ReadAsync(data, read, length - read);
-                if (r == 0) return null;
-                read += r;
-            }
-
-            return data;
+            Console.ResetColor();
         }
     }
 }

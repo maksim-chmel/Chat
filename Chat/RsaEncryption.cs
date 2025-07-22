@@ -2,7 +2,7 @@ using System.Security.Cryptography;
 
 namespace Chat;
 
-internal class RsaEncryption
+public class RsaEncryption
 {
     private RSA _rsa = RSA.Create(2048);
 

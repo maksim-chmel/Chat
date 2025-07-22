@@ -2,7 +2,7 @@ using System.Security.Cryptography;
 
 namespace Chat;
 
-internal class AesEncryption(byte[] key, byte[] iv)
+public class AesEncryption(byte[] key, byte[] iv)
 {
     public string Encrypt(string plainText)
     {

@@ -1,15 +1,14 @@
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
-using System.Security.Cryptography;
 
 namespace Chat;
 
 public class ChatClient
 {
-    private readonly ConsoleHelper consoleHelper =  new ConsoleHelper();
-    private readonly ChatService chatService =  new ChatService();
-    private readonly SecureChannel secureChannel =  new SecureChannel();
+    private readonly ConsoleHelper consoleHelper = new ConsoleHelper();
+    private readonly ChatService chatService = new ChatService();
+    private readonly SecureChannel secureChannel = new SecureChannel();
+
     public async Task ConnectToHost(int port)
     {
         consoleHelper.WriteColor("Enter host IP (e.g., 127.0.0.1): ", ConsoleColor.Cyan);
@@ -21,23 +20,82 @@ public class ChatClient
 
         try
         {
-            using var client = new TcpClient();
+            var cts = new CancellationTokenSource();
             consoleHelper.WriteColor($"🔌 Connecting to {ip}:{port}...", ConsoleColor.Yellow);
-            await client.ConnectAsync(ip, port);
 
-            Console.WriteLine();
-            consoleHelper.WriteColor("✅ Connected successfully!", ConsoleColor.Green);
-            await using var stream = client.GetStream();
-                
-            var aes = await secureChannel.InitializeAsClientAsync(stream);
+            var client = await ConnectWithRetryAsync(ip, port, cts);
 
-            consoleHelper.WriteColor("💬 Chat started! Type /help for commands.", ConsoleColor.Cyan);
-            await chatService.ChatLoop(stream, aes);
+            if (client != null)
+            {
+                await consoleHelper.ShowConnectingAnimation();
+                await using var stream = client.GetStream();
+
+                var aes = await secureChannel.InitializeAsClientAsync(stream);
+
+                consoleHelper.WriteColor("💬 Chat started! Type /help for commands.", ConsoleColor.Cyan);
+                await chatService.ChatLoop(stream, aes);
+            }
+            else
+            {
+                Console.WriteLine();
+                consoleHelper.WriteColor("❌ Timeout exceeded.", ConsoleColor.Red);
+                await Task.Delay(1000);
+                Console.Clear();
+            }
         }
         catch (Exception e)
         {
-            Console.WriteLine();
-            consoleHelper.WriteColor($"Connection error: {e.Message}", ConsoleColor.Red);
+            consoleHelper.WriteColor($"\nConnection error: {e.Message}", ConsoleColor.Red);
         }
+    }
+
+    private async Task<TcpClient?> ConnectWithRetryAsync(IPAddress serverIp, int port, CancellationTokenSource cts)
+    {
+        int timeoutSeconds = Program.timeoutSeconds;
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var countdownTask = consoleHelper.ShowCountdown(timeoutSeconds, cts.Token);
+
+        while (stopwatch.Elapsed.TotalSeconds < timeoutSeconds && !cts.Token.IsCancellationRequested)
+        {
+            try
+            {
+                var client = new TcpClient();
+                var connectTask = client.ConnectAsync(serverIp, port);
+                
+                var remainingTime = TimeSpan.FromSeconds(timeoutSeconds) - stopwatch.Elapsed;
+                if (remainingTime <= TimeSpan.Zero)
+                {
+                    client.Dispose();
+                    break;
+                }
+
+                var timeoutTask = Task.Delay(remainingTime, cts.Token);
+
+                var completedTask = await Task.WhenAny(connectTask, timeoutTask);
+
+                if (completedTask == connectTask)
+                {
+                    if (client.Connected)
+                    {
+                        cts.Cancel(); 
+                        await countdownTask;
+                        return client;
+                    }
+                    client.Dispose();
+                }
+                else
+                {
+                    client.Dispose();
+                    break;
+                }
+            }
+            catch (Exception)
+            {
+                await Task.Delay(500, cts.Token);
+            }
+        }
+        cts.Cancel();
+        await countdownTask;
+        return null;
     }
 }

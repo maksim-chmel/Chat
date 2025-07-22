@@ -1,11 +1,12 @@
 using System.Net.Sockets;
 using System.Text;
+using Spectre.Console;
 
-namespace Chat;
-
-public class ChatService
+namespace Chat
 {
-    private readonly ConsoleHelper consoleHelper =  new ConsoleHelper();
+    public class ChatService
+    {
+        private readonly ConsoleHelper consoleHelper = new ConsoleHelper();
         public async Task ChatLoop(NetworkStream stream, AesEncryption aes)
         {
             var cts = new CancellationTokenSource();
@@ -13,10 +14,20 @@ public class ChatService
 
             _ = StartReceiverLoop(stream, aes, cts, receiverCompleted);
 
-            await HandleUserInputAsync(stream, aes, cts);
+            try
+            {
+                await HandleUserInputAsync(stream, aes, cts);
+            }
+            catch (Exception ex)
+            {
+                AnsiConsole.MarkupLineInterpolated($"[red]❌ Fatal error in chat loop: {ex.Message}[/]");
+            }
 
             await receiverCompleted.Task;
-            consoleHelper.WriteColor("🔚 You left the chat\n", ConsoleColor.Cyan);
+
+            AnsiConsole.Write(new Panel("[cyan]🔚 You left the chat[/]")
+                .Border(BoxBorder.Double)
+                .BorderStyle(new Style(Color.Cyan1)));
         }
 
         private async Task StartReceiverLoop(NetworkStream stream, AesEncryption aes, CancellationTokenSource cts,
@@ -31,56 +42,79 @@ public class ChatService
                     while (!cts.IsCancellationRequested)
                     {
                         int len = await stream.ReadAsync(buffer, 0, buffer.Length, cts.Token);
-
                         if (len == 0)
                         {
-                            Console.WriteLine();
-                            consoleHelper.WriteColor("[Peer disconnected]", ConsoleColor.Yellow);
-                            break;
-                        }
-
-                        string encrypted = Encoding.UTF8.GetString(buffer, 0, len);
-                        string decrypted = aes.Decrypt(encrypted);
-
-                        if (decrypted == "__exit__")
-                        {
-                            Console.WriteLine();
-                            consoleHelper.WriteColor("[Peer exited the chat]", ConsoleColor.Yellow);
+                            AnsiConsole.MarkupLine("\n[yellow]⚠️ Peer disconnected[/]");
                             cts.Cancel();
                             break;
                         }
 
-                        PrintMessageFromPeer(decrypted);
+                        string encrypted;
+                        try
+                        {
+                            encrypted = Encoding.UTF8.GetString(buffer, 0, len);
+                        }
+                        catch (Exception ex)
+                        {
+                            AnsiConsole.MarkupLineInterpolated($"[red]❌ Error decoding message: {ex.Message}[/]");
+                            continue;
+                        }
+
+                        string decrypted;
+                        try
+                        {
+                            decrypted = aes.Decrypt(encrypted);
+                        }
+                        catch (Exception ex)
+                        {
+                            AnsiConsole.MarkupLineInterpolated($"[red]❌ Decryption failed: {ex.Message}[/]");
+                            continue;
+                        }
+
+                        if (decrypted == "__exit__")
+                        {
+                            AnsiConsole.MarkupLine("\n[yellow]👋 Peer exited the chat[/]");
+                            cts.Cancel();
+                            break;
+                        }
+
+                        AnsiConsole.WriteLine();
+                        AnsiConsole.MarkupLine($"[green]Friend:[/] {decrypted}");
+                        PrintPrompt();
                     }
                 }
                 catch (OperationCanceledException)
                 {
-                    // normal termination
+                    // normal shutdown
+                }
+                catch (ObjectDisposedException)
+                {
+                    AnsiConsole.MarkupLine("[red]❌ Stream was disposed[/]");
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine();
-                    consoleHelper.WriteColor($"[Error receiving messages: {ex.Message}]", ConsoleColor.Red);
+                    AnsiConsole.MarkupLineInterpolated($"[red]❌ Unexpected receive error: {ex.Message}[/]");
                 }
                 finally
                 {
-                    receiverCompleted.SetResult();
+                    receiverCompleted.TrySetResult();
                 }
             });
         }
 
         private async Task HandleUserInputAsync(NetworkStream stream, AesEncryption aes, CancellationTokenSource cts)
         {
-            while (true)
+            while (!cts.IsCancellationRequested)
             {
                 PrintPrompt();
 
                 string? msg = Console.ReadLine();
-
-                if (string.IsNullOrWhiteSpace(msg)) continue;
+                if (string.IsNullOrWhiteSpace(msg))
+                    continue;
 
                 if (msg.Equals("/q", StringComparison.OrdinalIgnoreCase))
                 {
+                    await consoleHelper.ShowDisconnectingAnimation();
                     await SendExitMessageAsync(stream, aes);
                     cts.Cancel();
                     break;
@@ -101,46 +135,49 @@ public class ChatService
                 try
                 {
                     string encrypted = aes.Encrypt(msg);
-                    await stream.WriteAsync(Encoding.UTF8.GetBytes(encrypted));
+                    byte[] data = Encoding.UTF8.GetBytes(encrypted);
+                    await stream.WriteAsync(data, 0, data.Length);
+                }
+                catch (ObjectDisposedException)
+                {
+                    AnsiConsole.MarkupLine("[red]❌ Cannot send: stream has been closed[/]");
+                    cts.Cancel();
+                    break;
+                }
+                catch (IOException ex)
+                {
+                    AnsiConsole.MarkupLineInterpolated($"[red]❌ Network error while sending: {ex.Message}[/]");
+                    cts.Cancel();
+                    break;
                 }
                 catch (Exception ex)
                 {
-                    consoleHelper.WriteColor($"❌ Send error: {ex.Message}", ConsoleColor.Red);
+                    AnsiConsole.MarkupLineInterpolated($"[red]❌ Unexpected send error: {ex.Message}[/]");
                     cts.Cancel();
                     break;
                 }
             }
         }
 
-        private void PrintMessageFromPeer(string decrypted)
-        {
-            Console.WriteLine();
-            Console.ForegroundColor = ConsoleColor.Green;
-            Console.Write("[Friend]: ");
-            Console.ResetColor();
-            Console.WriteLine(decrypted);
-        }
-
         private void PrintPrompt()
         {
-            Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.Write("[You]: ");
-            Console.ResetColor();
+            AnsiConsole.Markup("[green]You: [/]");
         }
+
+        
 
         private async Task SendExitMessageAsync(NetworkStream stream, AesEncryption aes)
         {
             try
             {
                 string exitMsg = aes.Encrypt("__exit__");
-                await stream.WriteAsync(Encoding.UTF8.GetBytes(exitMsg));
+                byte[] data = Encoding.UTF8.GetBytes(exitMsg);
+                await stream.WriteAsync(data, 0, data.Length);
             }
             catch
             {
-                // ignored
+                // Fail silently on disconnect
             }
         }
-
-       
     }
-
+}

@@ -1,6 +1,5 @@
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
 
 namespace Chat;
 
@@ -9,7 +8,7 @@ public class ChatHost
     private readonly ConsoleHelper consoleHelper =  new ConsoleHelper();
     private readonly ChatService chatService =  new ChatService();
     private readonly SecureChannel secureChannel =  new SecureChannel();
-    private const int timeoutSeconds = 30;
+    
      public async Task StartHost(int port)
         {
             var listener = new TcpListener(IPAddress.Any, port);
@@ -53,9 +52,9 @@ public class ChatHost
         }
         private async Task<TcpClient?> WaitForClientWithTimeoutAsync(TcpListener listener, CancellationTokenSource token)
         {
-            var countdownTask = consoleHelper.ShowCountdown(timeoutSeconds, token.Token);
+            var countdownTask = consoleHelper.ShowCountdown(Program.timeoutSeconds, token.Token);
             var acceptTask = listener.AcceptTcpClientAsync();
-            var timeoutTask = Task.Delay(TimeSpan.FromSeconds(timeoutSeconds));
+            var timeoutTask = Task.Delay(TimeSpan.FromSeconds(Program.timeoutSeconds));
 
             var completed = await Task.WhenAny(acceptTask, timeoutTask);
             token.Cancel();
